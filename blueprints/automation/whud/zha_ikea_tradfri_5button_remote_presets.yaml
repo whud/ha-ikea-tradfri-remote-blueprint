@@ -129,6 +129,11 @@ triggers:
     event_data:
       device_id: !input remote
 
+# The power button also reports its on/off attribute. Ignore those events.
+# A failed condition does not restart the automation, so running loops continue.
+conditions:
+  - "{{ trigger.event.data.command != 'attribute_updated' }}"
+
 variables:
   var_light: !input light
   var_speed: !input speed
@@ -148,7 +153,7 @@ variables:
     {%- set d = trigger.event.data -%}
     {%- if d.params is defined and d.params is mapping and d.params.param1 is defined -%}
       {{ d.params.param1 | int(0) }}
-    {%- elif d.args is defined and d.args is sequence and d.args is not string and d.args | length > 0 -%}
+    {%- elif d.args is defined and d.args is sequence and d.args is not string and d.args is not mapping and d.args | length > 0 -%}
       {{ d.args[0] | int(0) }}
     {%- else -%}
       0
