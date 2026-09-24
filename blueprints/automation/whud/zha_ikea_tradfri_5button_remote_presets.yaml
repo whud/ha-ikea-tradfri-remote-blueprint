@@ -1,0 +1,287 @@
+# IKEA TRADFRI 5-button remote (ZHA) - color presets
+#
+# Based on the blueprint by niro1987 (MIT License):
+# https://github.com/niro1987/homeassistant-config/blob/main/blueprints/automation/niro1987/zha_ikea_tradfri_5button_remote_color.yaml
+#
+# | Button   | Short press                  | Long press                        |
+# | -------- | ---------------------------- | --------------------------------- |
+# | Power    | Toggle the light             | Full brightness, normal white     |
+# | Dim-Up   | Increase brightness          | Keep increasing until released    |
+# | Dim-Down | Decrease brightness          | Keep decreasing until released    |
+# | Right    | Next color preset (1-5)      | Rainbow fade until released       |
+# | Left     | Back to normal (warm white)  | Back to normal (warm white)       |
+
+blueprint:
+  name: ZHA - IKEA TRADFRI 5-button remote - Color presets
+  description: >-
+    Control a light with the round IKEA TRADFRI 5-button remote connected
+    through ZHA.
+
+
+    **Right** cycles through 5 color presets (hold for a rainbow fade).
+    **Left** returns the light to normal warm white.
+    Power toggles, dim buttons change brightness (hold to keep dimming).
+  domain: automation
+  source_url: https://github.com/whud/ha-ikea-tradfri-remote-blueprint/blob/main/blueprints/automation/whud/zha_ikea_tradfri_5button_remote_presets.yaml
+  author: whud
+  homeassistant:
+    min_version: 2024.10.0
+
+  input:
+    remote:
+      name: Remote
+      description: The IKEA TRADFRI remote control.
+      selector:
+        device:
+          multiple: false
+          filter:
+            - integration: zha
+              manufacturer: IKEA of Sweden
+              model: TRADFRI remote control
+    light:
+      name: Light
+      description: The light (or light group) to control.
+      selector:
+        entity:
+          multiple: false
+          filter:
+            - domain: light
+
+    colors:
+      name: Color presets
+      icon: mdi:palette
+      description: The right button cycles through these colors in order.
+      input:
+        color_1:
+          name: Color 1
+          default: [255, 0, 0]
+          selector:
+            color_rgb:
+        color_2:
+          name: Color 2
+          default: [255, 140, 0]
+          selector:
+            color_rgb:
+        color_3:
+          name: Color 3
+          default: [0, 255, 0]
+          selector:
+            color_rgb:
+        color_4:
+          name: Color 4
+          default: [0, 80, 255]
+          selector:
+            color_rgb:
+        color_5:
+          name: Color 5
+          default: [170, 0, 255]
+          selector:
+            color_rgb:
+
+    normal:
+      name: Normal light
+      icon: mdi:lightbulb-on
+      description: What the left button returns the light to.
+      input:
+        normal_kelvin:
+          name: Color temperature
+          default: 2700
+          selector:
+            color_temp:
+              unit: kelvin
+              min: 2000
+              max: 6500
+        normal_brightness:
+          name: Brightness
+          default: 80
+          selector:
+            number:
+              min: 1
+              max: 100
+              unit_of_measurement: "%"
+              mode: slider
+
+    advanced:
+      name: Advanced
+      icon: mdi:cog
+      collapsed: true
+      input:
+        speed:
+          name: Speed
+          description: >-
+            Fade time for presses, and how often the light updates while a
+            button is held.
+          default: 500
+          selector:
+            number:
+              min: 100
+              max: 1000
+              step: 100
+              unit_of_measurement: milliseconds
+              mode: slider
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
+
+variables:
+  var_light: !input light
+  var_speed: !input speed
+  var_transition: "{{ (var_speed / 1000) | float }}"
+  var_colors:
+    - !input color_1
+    - !input color_2
+    - !input color_3
+    - !input color_4
+    - !input color_5
+  # Safety limit for hold loops, in case the release event is lost (~50 steps).
+  var_max_steps: 50
+  cmd: "{{ trigger.event.data.command }}"
+  # Button code: newer ZHA sends it in params.param1, older ZHA in args[0].
+  # 256 = right, 257 = left (press); 3328 = right, 3329 = left (hold).
+  btn: >-
+    {%- set d = trigger.event.data -%}
+    {%- if d.params is defined and d.params is mapping and d.params.param1 is defined -%}
+      {{ d.params.param1 | int(0) }}
+    {%- elif d.args is defined and d.args is sequence and d.args is not string and d.args | length > 0 -%}
+      {{ d.args[0] | int(0) }}
+    {%- else -%}
+      0
+    {%- endif -%}
+
+actions:
+  - choose:
+      # Power - short press: toggle.
+      - conditions: "{{ cmd == 'toggle' }}"
+        sequence:
+          - action: light.toggle
+            target:
+              entity_id: !input light
+
+      # Power - long press: full brightness, normal white.
+      - conditions: "{{ cmd == 'move_to_level_with_on_off' }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: !input light
+            data:
+              brightness_pct: 100
+              color_temp_kelvin: !input normal_kelvin
+              transition: "{{ var_transition }}"
+
+      # Dim-Up - short press.
+      - conditions: "{{ cmd == 'step_with_on_off' }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: !input light
+            data:
+              brightness_step_pct: 20
+              transition: "{{ var_transition }}"
+
+      # Dim-Up - long press: keep brightening until released.
+      - conditions: "{{ cmd == 'move_with_on_off' }}"
+        sequence:
+          - repeat:
+              while: "{{ repeat.index <= var_max_steps }}"
+              sequence:
+                - action: light.turn_on
+                  target:
+                    entity_id: !input light
+                  data:
+                    brightness_step_pct: 10
+                    transition: "{{ var_transition }}"
+                - delay:
+                    milliseconds: "{{ var_speed }}"
+
+      # Dim-Down - short press.
+      - conditions: "{{ cmd == 'step' }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: !input light
+            data:
+              brightness_step_pct: -20
+              transition: "{{ var_transition }}"
+
+      # Dim-Down - long press: keep dimming until released.
+      - conditions: "{{ cmd == 'move' }}"
+        sequence:
+          - repeat:
+              while: "{{ repeat.index <= var_max_steps }}"
+              sequence:
+                - action: light.turn_on
+                  target:
+                    entity_id: !input light
+                  data:
+                    brightness_step_pct: -10
+                    transition: "{{ var_transition }}"
+                - delay:
+                    milliseconds: "{{ var_speed }}"
+
+      # Right - short press: next color preset.
+      # Finds the preset closest to the light's current color and moves to the
+      # next one. Starts at color 1 if the light is off or showing white.
+      - conditions: "{{ cmd == 'press' and btn | int(0) == 256 }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: !input light
+            data:
+              transition: "{{ var_transition }}"
+              rgb_color: >-
+                {%- set cur = state_attr(var_light, 'rgb_color') -%}
+                {%- set mode = state_attr(var_light, 'color_mode') -%}
+                {%- set ns = namespace(best=-1, dist=99) -%}
+                {%- if not is_state(var_light, 'off') and cur is not none
+                      and mode not in ['color_temp', 'white', 'brightness', 'onoff'] -%}
+                  {%- set cm = [cur | max, 1] | max -%}
+                  {%- for c in var_colors -%}
+                    {%- set pm = [c | max, 1] | max -%}
+                    {%- set d = (cur[0] / cm - c[0] / pm) ** 2
+                              + (cur[1] / cm - c[1] / pm) ** 2
+                              + (cur[2] / cm - c[2] / pm) ** 2 -%}
+                    {%- if d < ns.dist -%}
+                      {%- set ns.dist = d -%}
+                      {%- set ns.best = loop.index0 -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ var_colors[(ns.best + 1) % (var_colors | length)] | list }}
+
+      # Right - long press: rainbow fade until released.
+      - conditions: "{{ cmd == 'hold' and btn | int(0) == 3328 }}"
+        sequence:
+          - repeat:
+              while: "{{ repeat.index <= var_max_steps }}"
+              sequence:
+                - action: light.turn_on
+                  target:
+                    entity_id: !input light
+                  data:
+                    hs_color:
+                      - "{{ (((state_attr(var_light, 'hs_color') or [0, 0])[0] | float(0)) + 18) % 360 }}"
+                      - 100
+                    transition: "{{ var_transition }}"
+                - delay:
+                    milliseconds: "{{ var_speed }}"
+
+      # Left - short or long press: back to normal warm white.
+      - conditions: "{{ (cmd == 'press' and btn | int(0) == 257) or (cmd == 'hold' and btn | int(0) == 3329) }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: !input light
+            data:
+              color_temp_kelvin: !input normal_kelvin
+              brightness_pct: !input normal_brightness
+              transition: "{{ var_transition }}"
+
+    # Any other event (e.g. button release) stops the hold loops, because
+    # mode: restart cancels the running loop.
+    default: []
